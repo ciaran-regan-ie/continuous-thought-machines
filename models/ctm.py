@@ -97,6 +97,8 @@ class ContinuousThoughtMachine(nn.Module):
                  dropout_nlm=None,
                  neuron_select_type='random-pairing',  
                  n_random_pairing_self=0,
+                 no_nlms=False,
+                 no_synch=False
                  ):
         super(ContinuousThoughtMachine, self).__init__()
 
@@ -128,23 +130,26 @@ class ContinuousThoughtMachine(nn.Module):
         self.attention = nn.MultiheadAttention(self.d_input, heads, dropout, batch_first=True) if heads else None
         
         # --- Core CTM Modules ---
+        self.no_nlms = no_nlms
+        self.no_synch = no_synch
         self.synapses = self.get_synapses(synapse_depth, d_model, dropout)
-        self.trace_processor = self.get_neuron_level_models(deep_nlms, do_layernorm_nlm, memory_length, memory_hidden_dims, d_model, dropout_nlm)
+        self.trace_processor = self.get_neuron_level_models(deep_nlms, do_layernorm_nlm, memory_length, memory_hidden_dims, d_model, dropout_nlm, no_nlms=no_nlms)
 
         #  --- Start States ---
         self.register_parameter('start_activated_state', nn.Parameter(torch.zeros((d_model)).uniform_(-math.sqrt(1/(d_model)), math.sqrt(1/(d_model)))))
         self.register_parameter('start_trace', nn.Parameter(torch.zeros((d_model, memory_length)).uniform_(-math.sqrt(1/(d_model+memory_length)), math.sqrt(1/(d_model+memory_length)))))
 
         # --- Synchronisation ---
-        self.neuron_select_type_out, self.neuron_select_type_action = self.get_neuron_select_type()
-        self.synch_representation_size_action = self.calculate_synch_representation_size(self.n_synch_action)
-        self.synch_representation_size_out = self.calculate_synch_representation_size(self.n_synch_out)
-        
-        for synch_type, size in (('action', self.synch_representation_size_action), ('out', self.synch_representation_size_out)):
-            print(f"Synch representation size {synch_type}: {size}")
-        if self.synch_representation_size_action:  # if not zero
-            self.set_synchronisation_parameters('action', self.n_synch_action, n_random_pairing_self)
-        self.set_synchronisation_parameters('out', self.n_synch_out, n_random_pairing_self)
+        if not self.no_synch:
+            self.neuron_select_type_out, self.neuron_select_type_action = self.get_neuron_select_type()
+            self.synch_representation_size_action = self.calculate_synch_representation_size(self.n_synch_action)
+            self.synch_representation_size_out = self.calculate_synch_representation_size(self.n_synch_out)
+            
+            for synch_type, size in (('action', self.synch_representation_size_action), ('out', self.synch_representation_size_out)):
+                print(f"Synch representation size {synch_type}: {size}")
+            if self.synch_representation_size_action:  # if not zero
+                self.set_synchronisation_parameters('action', self.n_synch_action, n_random_pairing_self)
+            self.set_synchronisation_parameters('out', self.n_synch_out, n_random_pairing_self)
 
         # --- Output Procesing ---
         self.output_projector = nn.Sequential(nn.LazyLinear(self.out_dims))
@@ -170,6 +175,9 @@ class ContinuousThoughtMachine(nn.Module):
         
         See Appendix TODO of the Technical Report (TODO:LINK) for the maths that enables this method.
         """
+
+        if self.no_synch:
+            return activated_state, 0, 0
 
         if synch_type == 'action': # Get action parameters
             n_synch = self.n_synch_action
@@ -332,7 +340,7 @@ class ContinuousThoughtMachine(nn.Module):
         else:
             raise ValueError(f"Invalid positional_embedding_type: {self.positional_embedding_type}")
 
-    def get_neuron_level_models(self, deep_nlms, do_layernorm_nlm, memory_length, memory_hidden_dims, d_model, dropout):
+    def get_neuron_level_models(self, deep_nlms, do_layernorm_nlm, memory_length, memory_hidden_dims, d_model, dropout, no_nlms=False):
         """
         Neuron level models are one of the core innovations of the CTM. They apply separate MLPs/linears to 
         each neuron.
@@ -342,6 +350,10 @@ class ContinuousThoughtMachine(nn.Module):
 
         NOTE: We used GLU() nonlinearities because they worked well in practice. 
         """
+
+        if no_nlms:
+            return lambda state_trace: state_trace[:,:,-1]  # Just return the last pre-activation trace
+
         if deep_nlms:
             return nn.Sequential(
                 nn.Sequential(
@@ -499,10 +511,15 @@ class ContinuousThoughtMachine(nn.Module):
         certainties = torch.empty(B, 2, self.iterations, device=device, dtype=torch.float32)
 
         # --- Initialise Recurrent Synch Values  ---
-        decay_alpha_action, decay_beta_action = None, None
-        self.decay_params_action.data = torch.clamp(self.decay_params_action, 0, 15)  # Fix from github user: kuviki
-        self.decay_params_out.data = torch.clamp(self.decay_params_out, 0, 15)
-        r_action, r_out = torch.exp(-self.decay_params_action).unsqueeze(0).repeat(B, 1), torch.exp(-self.decay_params_out).unsqueeze(0).repeat(B, 1)
+        if not self.no_synch:
+            decay_alpha_action, decay_beta_action = None, None
+            self.decay_params_action.data = torch.clamp(self.decay_params_action, 0, 15)  # Fix from github user: kuviki
+            self.decay_params_out.data = torch.clamp(self.decay_params_out, 0, 15)
+            r_action, r_out = torch.exp(-self.decay_params_action).unsqueeze(0).repeat(B, 1), torch.exp(-self.decay_params_out).unsqueeze(0).repeat(B, 1)
+        else:
+            # Use dummy values for r_action and r_out if no synchronisation is used
+            r_action, r_out = torch.ones((B, self.d_model), device=device), torch.ones((B, self.d_model), device=device)
+            decay_alpha_action, decay_beta_action = None, None
 
         _, decay_alpha_out, decay_beta_out = self.compute_synchronisation(activated_state, None, None, r_out, synch_type='out')
         # Compute learned weighting for synchronisation

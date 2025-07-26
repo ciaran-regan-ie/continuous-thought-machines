@@ -86,6 +86,9 @@ def parse_args():
     parser.add_argument('--memory_hidden_dims', type=int, default=4, help='Hidden dimensions of the memory if using deep memory (CTM only).')
     parser.add_argument('--dropout_nlm', type=float, default=None, help='Dropout rate for NLMs specifically. Unset to match dropout on the rest of the model (CTM only).')
     parser.add_argument('--do_normalisation', action=argparse.BooleanOptionalAction, default=False, help='Apply normalization in NLMs (CTM only).')
+    parser.add_argument('--no_nlms', action=argparse.BooleanOptionalAction, default=False, help='Remove the neuron level models for ablations, instead project from pre-activations (CTM only).')
+    parser.add_argument('--no_synch', action=argparse.BooleanOptionalAction, default=False, help='Remove synchronization for ablations, instead project from activated state (CTM only).')
+
     # LSTM specific
     parser.add_argument('--num_layers', type=int, default=2, help='Number of LSTM stacked layers (LSTM only).')
 
@@ -244,6 +247,8 @@ if __name__=='__main__':
             dropout_nlm=args.dropout_nlm,
             neuron_select_type=args.neuron_select_type,
             n_random_pairing_self=args.n_random_pairing_self,
+            no_nlms=args.no_nlms,
+            no_synch=args.no_synch,
         ).to(device)
     elif args.model == 'lstm':
          model = LSTMBaseline(
