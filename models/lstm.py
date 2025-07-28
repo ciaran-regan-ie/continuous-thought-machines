@@ -39,6 +39,12 @@ class LSTMBaseline(nn.Module):
                  out_dims,
                  prediction_reshaper=[-1],
                  dropout=0,
+                 # Synchronization Hyperparameters
+                 use_synch=False,
+                 n_synch_out=0,
+                 n_synch_action=0,
+                 neuron_select_type='random-pairing',
+                 n_random_pairing_self=0,
                  ):
         super(LSTMBaseline, self).__init__()
 
@@ -50,6 +56,13 @@ class LSTMBaseline(nn.Module):
         self.backbone_type = backbone_type
         self.positional_embedding_type = positional_embedding_type
         self.out_dims = out_dims
+
+        # --- Synchronization Parameters ---
+        self.use_synch = use_synch
+        self.n_synch_out = n_synch_out
+        self.n_synch_action = n_synch_action
+        self.neuron_select_type = neuron_select_type
+        self.n_random_pairing_self = n_random_pairing_self
 
         # --- Assertions ---
         self.verify_args()
@@ -70,8 +83,17 @@ class LSTMBaseline(nn.Module):
         self.register_parameter('start_hidden_state', nn.Parameter(torch.zeros((num_layers, d_model)).uniform_(-math.sqrt(1/(d_model)), math.sqrt(1/(d_model))), requires_grad=True))
         self.register_parameter('start_cell_state', nn.Parameter(torch.zeros((num_layers, d_model)).uniform_(-math.sqrt(1/(d_model)), math.sqrt(1/(d_model))), requires_grad=True))
 
-
-
+        if self.use_synch:
+            self.neuron_select_type_out, self.neuron_select_type_action = self.get_neuron_select_type()
+            self.synch_representation_size_action = self.calculate_synch_representation_size(self.n_synch_action)
+            self.synch_representation_size_out = self.calculate_synch_representation_size(self.n_synch_out)
+            
+            for synch_type, size in (('action', self.synch_representation_size_action), ('out', self.synch_representation_size_out)):
+                print(f"Synch representation size {synch_type}: {size}")
+            if self.synch_representation_size_action:  # if not zero
+                self.set_synchronisation_parameters('action', self.n_synch_action, n_random_pairing_self)
+            self.set_synchronisation_parameters('out', self.n_synch_out, n_random_pairing_self)
+   
     # --- Core LSTM Methods ---
 
     def compute_features(self, x):
@@ -186,7 +208,139 @@ class LSTMBaseline(nn.Module):
 
         pass
 
+    def set_synchronisation_parameters(self, synch_type: str, n_synch: int, n_random_pairing_self: int = 0):
+            """
+            1. Set the buffers for selecting neurons so that these indices are saved into the model state_dict.
+            2. Set the parameters for learnable exponential decay when computing synchronisation between all 
+                neurons.
+            """
+            assert synch_type in ('out', 'action'), f"Invalid synch_type: {synch_type}"
+            left, right = self.initialize_left_right_neurons(synch_type, self.d_model, n_synch, n_random_pairing_self)
+            synch_representation_size = self.synch_representation_size_action if synch_type == 'action' else self.synch_representation_size_out
+            self.register_buffer(f'{synch_type}_neuron_indices_left', left)
+            self.register_buffer(f'{synch_type}_neuron_indices_right', right)
+            self.register_parameter(f'decay_params_{synch_type}', nn.Parameter(torch.zeros(synch_representation_size), requires_grad=True))
 
+    def initialize_left_right_neurons(self, synch_type, d_model, n_synch, n_random_pairing_self=0):
+        """
+        Initialize the left and right neuron indices based on the neuron selection type.
+        This complexity is owing to legacy experiments, but we retain that these types of
+        neuron selections are interesting to experiment with.
+        """
+        if self.neuron_select_type=='first-last':
+            if synch_type == 'out':
+                neuron_indices_left = neuron_indices_right = torch.arange(0, n_synch)
+            elif synch_type == 'action':
+                neuron_indices_left = neuron_indices_right = torch.arange(d_model-n_synch, d_model)
+
+        elif self.neuron_select_type=='random':
+            neuron_indices_left = torch.from_numpy(np.random.choice(np.arange(d_model), size=n_synch))
+            neuron_indices_right = torch.from_numpy(np.random.choice(np.arange(d_model), size=n_synch))
+
+        elif self.neuron_select_type=='random-pairing':
+            assert n_synch > n_random_pairing_self, f"Need at least {n_random_pairing_self} pairs for {self.neuron_select_type}"
+            neuron_indices_left = torch.from_numpy(np.random.choice(np.arange(d_model), size=n_synch))
+            neuron_indices_right = torch.concatenate((neuron_indices_left[:n_random_pairing_self], torch.from_numpy(np.random.choice(np.arange(d_model), size=n_synch-n_random_pairing_self))))
+
+        device = self.start_hidden_state.device
+        return neuron_indices_left.to(device), neuron_indices_right.to(device)
+
+    def get_neuron_select_type(self):
+        """
+        Another helper method to accomodate our legacy neuron selection types. 
+        TODO: additional experimentation and possible removal of 'first-last' and 'random'
+        """
+        print(f"Using neuron select type: {self.neuron_select_type}")
+        if self.neuron_select_type == 'first-last':
+            neuron_select_type_out, neuron_select_type_action = 'first', 'last'
+        elif self.neuron_select_type in ('random', 'random-pairing'):
+            neuron_select_type_out = neuron_select_type_action = self.neuron_select_type
+        else:
+            raise ValueError(f"Invalid neuron selection type: {self.neuron_select_type}")
+        return neuron_select_type_out, neuron_select_type_action
+
+    def calculate_synch_representation_size(self, n_synch):
+        """
+        Calculate the size of the synchronisation representation based on neuron selection type.
+        """
+        if self.neuron_select_type == 'random-pairing':
+            synch_representation_size = n_synch
+        elif self.neuron_select_type in ('first-last', 'random'):
+            synch_representation_size = (n_synch * (n_synch + 1)) // 2
+        else:
+            raise ValueError(f"Invalid neuron selection type: {self.neuron_select_type}")
+        return synch_representation_size
+
+    def compute_synchronisation(self, activated_state, decay_alpha, decay_beta, r, synch_type):
+        """
+        Computes synchronisation to be used as a vector representation. 
+
+        A neuron has what we call a 'trace', which is a history (time series) that changes with internal
+        recurrence. i.e., it gets longer with every internal tick. There are pre-activation traces
+        that are used in the NLMs and post-activation traces that, in theory, are used in this method. 
+
+        We define sychronisation between neuron i and j as the dot product between their respective
+        time series. Since there can be many internal ticks, this process can be quite compute heavy as it
+        involves many dot products that repeat computation at each step.
+        
+        Therefore, in practice, we update the synchronisation based on the current post-activations,
+        which we call the 'activated state' here. This is possible because the inputs to synchronisation 
+        are only updated recurrently at each step, meaning that there is a linear recurrence we can
+        leverage. 
+        
+        See Appendix TODO of the Technical Report (TODO:LINK) for the maths that enables this method.
+        """
+
+        if not self.use_synch:
+            print("not using synchronisation")
+            return activated_state, 0, 0
+
+        if synch_type == 'action': # Get action parameters
+            n_synch = self.n_synch_action
+            neuron_indices_left = self.action_neuron_indices_left
+            neuron_indices_right = self.action_neuron_indices_right
+        elif synch_type == 'out': # Get input parameters
+            n_synch = self.n_synch_out
+            neuron_indices_left = self.out_neuron_indices_left
+            neuron_indices_right = self.out_neuron_indices_right
+        
+        if self.neuron_select_type in ('first-last', 'random'):
+            # For first-last and random, we compute the pairwise sync between all selected neurons
+            if self.neuron_select_type == 'first-last':
+                if synch_type == 'action': # Use last n_synch neurons for action
+                    selected_left = selected_right = activated_state[:, -n_synch:]
+                elif synch_type == 'out': # Use first n_synch neurons for out
+                    selected_left = selected_right = activated_state[:, :n_synch]
+            else: # Use the randomly selected neurons
+                selected_left = activated_state[:, neuron_indices_left]
+                selected_right = activated_state[:, neuron_indices_right]
+            
+            # Compute outer product of selected neurons
+            outer = selected_left.unsqueeze(2) * selected_right.unsqueeze(1)
+            # Resulting matrix is symmetric, so we only need the upper triangle
+            i, j = torch.triu_indices(n_synch, n_synch)
+            pairwise_product = outer[:, i, j]
+            
+        elif self.neuron_select_type == 'random-pairing':
+            # For random-pairing, we compute the sync between specific pairs of neurons
+            left = activated_state[:, neuron_indices_left]
+            right = activated_state[:, neuron_indices_right]
+            pairwise_product = left * right
+        else:
+            raise ValueError("Invalid neuron selection type")
+        
+        
+        
+        # Compute synchronisation recurrently
+        if decay_alpha is None or decay_beta is None:
+            decay_alpha = pairwise_product
+            decay_beta = torch.ones_like(pairwise_product)
+        else:
+            decay_alpha = r * decay_alpha + pairwise_product
+            decay_beta = r * decay_beta + 1
+        
+        synchronisation = decay_alpha / (torch.sqrt(decay_beta))
+        return synchronisation, decay_alpha, decay_beta
 
 
     def forward(self, x, track=False):
@@ -213,11 +367,27 @@ class LSTMBaseline(nn.Module):
         predictions = torch.empty(B, self.out_dims, self.iterations, device=device, dtype=x.dtype)
         certainties = torch.empty(B, 2, self.iterations, device=device, dtype=x.dtype)
 
+        # --- Initialise Recurrent Synch Values  ---
+        if self.use_synch:
+            decay_alpha_action, decay_beta_action = None, None
+            self.decay_params_action.data = torch.clamp(self.decay_params_action, 0, 15)  # Fix from github user: kuviki
+            self.decay_params_out.data = torch.clamp(self.decay_params_out, 0, 15)
+            r_action, r_out = torch.exp(-self.decay_params_action).unsqueeze(0).repeat(B, 1), torch.exp(-self.decay_params_out).unsqueeze(0).repeat(B, 1)
+        else:
+            # Use dummy values for r_action and r_out if no synchronisation is used
+            r_action, r_out = torch.ones((B, self.d_model), device=device), torch.ones((B, self.d_model), device=device)
+            decay_alpha_action, decay_beta_action = None, None
+
+        _, decay_alpha_out, decay_beta_out = self.compute_synchronisation(hn[-1], None, None, r_out, synch_type='out')
+
         # --- Recurrent Loop  ---
         for stepi in range(self.iterations):
 
+            # --- Calculate Synchronisation for Input Data Interaction ---
+            synchronisation_action, decay_alpha_action, decay_beta_action = self.compute_synchronisation(hn[-1], decay_alpha_action, decay_beta_action, r_action, synch_type='action')
+
             # --- Interact with Data via Attention ---
-            q = self.q_proj(hn[-1].unsqueeze(1))
+            q = self.q_proj(synchronisation_action).unsqueeze(1)
             attn_out, attn_weights = self.attention(q, kv, kv, average_attn_weights=False, need_weights=True)
             lstm_input = attn_out
 
@@ -226,8 +396,11 @@ class LSTMBaseline(nn.Module):
             hidden_state = hidden_state.squeeze(1)
             state_trace.append(hidden_state)
 
+            # --- Calculate Synchronisation for Output Predictions ---
+            synchronisation_out, decay_alpha_out, decay_beta_out = self.compute_synchronisation(hidden_state, decay_alpha_out, decay_beta_out, r_out, synch_type='out')
+
             # --- Get Predictions and Certainties ---
-            current_prediction = self.output_projector(hidden_state)
+            current_prediction = self.output_projector(synchronisation_out)
             current_certainty = self.compute_certainty(current_prediction)
 
             predictions[..., stepi] = current_prediction

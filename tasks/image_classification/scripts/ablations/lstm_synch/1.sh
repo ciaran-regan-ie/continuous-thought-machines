@@ -1,0 +1,33 @@
+python -m tasks.image_classification.train \
+--log_dir logs/cifar10-versus-humans/lstm/nlayers=2--d=256--i=64--heads=16--synch=256-512-0-h=64-random-pairing--iters=50x15--backbone=18-1--use_synch--seed=1 \
+--dataset cifar10 \
+--model lstm \
+--no-no_synch \
+--n_synch_action 256 \
+--n_synch_out 256 \
+--neuron_select_type random-pairing \
+--n_random_pairing_self 0 \
+--num_layers 2 \
+--d_model 256 \
+--d_input 64 \
+--heads 16 \
+--iterations 50 \
+--dropout 0.0  \
+--positional_embedding_type none \
+--backbone_type resnet18-1 \
+--training_iterations 600001 \
+--warmup_steps 2000 \
+--use_scheduler \
+--scheduler_type cosine \
+--weight_decay 0.0001 \
+--save_every 1000 \
+--track_every 2000 \
+--n_test_batches 50 \
+--reload  \
+--num_workers_train 8 \
+--batch_size 512 \
+--batch_size_test 512 \
+--lr 1e-4 \
+--device 0 \
+--seed 1 \
+--no-reload 

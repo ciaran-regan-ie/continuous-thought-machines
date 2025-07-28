@@ -262,6 +262,11 @@ if __name__=='__main__':
             out_dims=args.out_dims,
             prediction_reshaper=prediction_reshaper,
             dropout=args.dropout,
+            use_synch=(not args.no_synch),
+            n_synch_out=args.n_synch_out,
+            n_synch_action=args.n_synch_action,
+            neuron_select_type=args.neuron_select_type,
+            n_random_pairing_self=args.n_random_pairing_self,
         ).to(device)
     elif args.model == 'ff':
         model = FFBaseline(
