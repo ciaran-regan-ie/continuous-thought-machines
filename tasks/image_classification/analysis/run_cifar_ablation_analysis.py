@@ -30,7 +30,7 @@ def infer_experiment_group(checkpoint_path):
         return "CTM (No NLMs)"
     elif "no-synch" in path_lower:
         return "CTM (No Synch)"
-    elif "iters=50x15" in path_lower:
+    elif ("iters=50x15" in path_lower) and ("no-nlms" not in path_lower) and ("no-synch" not in path_lower) and ("lstm" not in path_lower):
         return "CTM"
     else:
         return "Other"
@@ -162,7 +162,7 @@ def print_summary_statistics(results_df):
         print(f"  Runs:           {grouped_stats.loc[group, ('final_train_accuracy', 'count')]}")
 
 
-def plot_training_curves(results_df, device, output_dir="figures", step=1, scale=1.0, x_max=None, evaluate_every=1000):
+def plot_training_curves(results_df, device, output_dir="figures", step=1, scale=1.0, x_max=None, evaluate_every=2000):
     """
     Create and save averaged training curves for each experiment group with shaded std areas.
     Matches the style and dimensions of the reference plotting functions.
@@ -258,7 +258,7 @@ def plot_training_curves(results_df, device, output_dir="figures", step=1, scale
             ax.set_ylim(top=100)
         
         # Use fewer, more readable x-axis ticks
-        ax.set_xticks(np.arange(0, x_max + 1, 20000))
+        ax.set_xticks(np.arange(0, x_max + 1, 50000))
         ax.tick_params(axis='both', which='major', labelsize=12)
         
         plt.tight_layout(pad=0.1)
@@ -269,9 +269,6 @@ def plot_training_curves(results_df, device, output_dir="figures", step=1, scale
         plt.savefig(save_path.replace("png", "pdf"), format='pdf')
         plt.close(fig)
         
-        print(f"✓ {plot_type.capitalize()} accuracy curves saved to {save_path}")
-        print(f"  Data range: 0 to {global_max_x} iterations ({len(trimmed[0]) if len(trimmed) > 0 else 0} points)")
-    
     # Also create a loss plot if loss data is available
     plot_loss_curves(results_df, device, output_dir, step, scale, x_max, evaluate_every)
 
@@ -428,7 +425,7 @@ def parse_command_line_arguments():
     parser.add_argument(
         '--evaluate_every',
         type=int,
-        default=1000,
+        default=2000,
         help="Training iterations between evaluations"
     )
     
@@ -458,6 +455,8 @@ def main():
         print("No valid checkpoints could be processed.")
         return
     
+    results_df = results_df[results_df['experiment_group'] != 'Other']
+
     # Print summary statistics
     print_summary_statistics(results_df)
     
