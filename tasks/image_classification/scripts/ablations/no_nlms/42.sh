@@ -33,4 +33,5 @@ python -m tasks.image_classification.train \
 --batch_size_test 512 \
 --lr 1e-4 \
 --device 0 \
---seed 42
+--seed 42 \
+--reload \
