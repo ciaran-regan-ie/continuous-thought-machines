@@ -7,7 +7,6 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 import matplotlib as mpl
 from collections import defaultdict
-from matplotlib.lines import Line2D
 
 sns.set_style('darkgrid')
 mpl.use('Agg')
@@ -79,10 +78,8 @@ def load_checkpoint_data(checkpoint_path, device='cpu'):
     return {
         'train_losses': checkpoint.get('train_losses', []),
         'test_losses': checkpoint.get('test_losses', []),
-        'train_accuracies': checkpoint.get('train_accuracies_most_certain', 
-                                         checkpoint.get('train_accuracies', [])),
-        'test_accuracies': checkpoint.get('test_accuracies_most_certain', 
-                                        checkpoint.get('test_accuracies', []))
+        'train_accuracies': checkpoint.get('train_accuracies_most_certain', []),
+        'test_accuracies': checkpoint.get('test_accuracies_most_certain', []),
     }
 
 
@@ -390,7 +387,7 @@ def parse_command_line_arguments():
     parser.add_argument(
         '--checkpoint_dirs', 
         type=str, 
-        default='logs_backup_2/', 
+        default='logs_backup_3/', 
         help="Path to directory containing CTM checkpoints"
     )
     
